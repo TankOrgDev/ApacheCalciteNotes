@@ -254,3 +254,61 @@ SqlToRelConverter converter = new SqlToRelConverter(
  
 ### Optimization
 
+　최적화는 relation tree를 다른 relation tree로 바꾸는 과정이다. 최적화는 rule-based인 **HepPlanner**와 cost-based인
+**VolcanoPlanner**가 존재한다. 또한 최적화에 사용되는 rule을 이용한 tree에 변경이 아닌 직접 수정해야하는 경우도 있는데,
+Apache Calcite에서는 RelDecorrleator와 RelFieldTrimmer를 제공한다. 
+ 일반적으로 rule-based 최적화기에 여러 규칙들을 넣고 수행하거나 직접 수정하는 방식으로 최적화를 진행한다.  
+　아래에서는 위에 코드에서 작성된 cost-based 최적화인 VolcanoPlanner를 사용했다. 
+입력으로는 최적화 대상이 될 relational tree와 rule set 그리고 대상 tree의 상위 노드의 trait이 된다.
+
+```text
+public RelNode optimize(
+    RelOptPlanner planner,
+    RelNode node, 
+    RelTraitSet requiredTraitSet, 
+    RuleSet rules) {
+    Program program = Programs.of(RuleSets.ofList(rules));
+
+    return program.run(
+        planner,
+        node,
+        requiredTraitSet,
+        Collections.emptyList(),
+        Collections.emptyList()
+    );
+}
+```
+
+　마지막으로 relational tree를 최적화하고 **Enumberable** convention을 통해 변환을 해주게 되는데,
+이는 Logical plan을 physical plan형태로 변환하는 작업이다. Logical Filter 및 Project는 optimize 과정에서
+LogicalCalc로 병합되며, physical 규칙을 통해 Enmberable node의 형태로 변환된다.
+```text
+RuleSet rules = RuleSets.ofList(
+    CoreRules.FILTER_TO_CALC,
+    CoreRules.PROJECT_TO_CALC,
+    CoreRules.FILTER_CALC_MERGE,
+    CoreRules.PROJECT_CALC_MERGE,
+    EnumerableRules.ENUMERABLE_TABLE_SCAN_RULE,
+    EnumerableRules.ENUMERABLE_PROJECT_RULE,
+    EnumerableRules.ENUMERABLE_FILTER_RULE,
+    EnumerableRules.ENUMERABLE_CALC_RULE,
+    EnumerableRules.ENUMERABLE_AGGREGATE_RULE
+);
+
+RelNode optimizerRelTree = optimizer.optimize(
+    relTree,
+    relTree.getTraitSet().plus(EnumerableConvention.INSTANCE),
+    rules
+);
+```
+```text
+LogicalAggregate(group=[{}], revenue=[SUM($0)]): rowcount = 1.0, cumulative cost = 63751.137500047684
+  LogicalProject($f0=[*($1, $2)]): rowcount = 1875.0, cumulative cost = 63750.0
+    LogicalFilter(condition=[AND(>=($3, ?0), <($3, ?1), >=($2, -(?2, 0.01)), <=($2, +(?3, 0.01)), <($0, ?4))]): rowcount = 1875.0, cumulative cost = 61875.0
+      LogicalTableScan(table=[[tpch, lineitem]]): rowcount = 60000.0, cumulative cost = 60000.0
+```
+```text
+EnumerableAggregate(group=[{}], revenue=[SUM($0)]): rowcount = 187.5, cumulative cost = 62088.2812589407
+  EnumerableCalc(expr#0..3=[{inputs}], expr#4=[*($t1, $t2)], expr#5=[?0], expr#6=[>=($t3, $t5)], expr#7=[?1], expr#8=[<($t3, $t7)], expr#9=[?2], expr#10=[0.01:DECIMAL(3, 2)], expr#11=[-($t9, $t10)], expr#12=[>=($t2, $t11)], expr#13=[?3], expr#14=[+($t13, $t10)], expr#15=[<=($t2, $t14)], expr#16=[?4], expr#17=[<($t0, $t16)], expr#18=[AND($t6, $t8, $t12, $t15, $t17)], $f0=[$t4], $condition=[$t18]): rowcount = 1875.0, cumulative cost = 61875.0
+    EnumerableTableScan(table=[[tpch, lineitem]]): rowcount = 60000.0, cumulative cost = 60000.0
+```
